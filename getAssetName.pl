@@ -10,13 +10,16 @@ use LWP::UserAgent;
 # rpm package on Fedora 29: perl-JSON
 use JSON;
 use IO::Socket;
+# rpm package on Fedora 29: perl-Net-DNS
+use Net::DNS;
 
 my %file = (
 	special => 'special.tsv',
 	asset => 'assetInfo.tsv',
 	rdap => 'rdap.tsv',
-	hostname => 'hostname.csv',
+	hostname => 'hostname.tsv',
 );
+my $useGooglePublicDns = 0;
 
 my @multiplier = ( 16777216, 65536, 256 );
 sub getIpAddressAsNumber {
@@ -201,18 +204,37 @@ while (scalar @octed > 0) {
 	$queryName .= '.';
 }
 $queryName .= 'in-addr.arpa';
-my $dnsRequest = HTTP::Request->new('GET', "https://dns.google.com/resolve?name=$queryName&type=PTR");
-my $dnsResponse = $ua->request($dnsRequest);
-unless ($dnsResponse->is_success) {
-	my $status = $dnsResponse->code;
-	print STDERR "$0: ERROR: Google Public DNS lookup failed($status): $queryName";
-	$hostname = $queryName;
-	print "$ipAddress\t$hostname";
-	exit 1;
+$hostname = $queryName;
+if ($useGooglePublicDns) {
+	my $dnsRequest = HTTP::Request->new('GET', "https://dns.google.com/resolve?name=$queryName&type=PTR");
+	my $dnsResponse = $ua->request($dnsRequest);
+	if ($dnsResponse->is_success) {
+		my $dnsAnswer = decode_json($dnsResponse->content);
+		my $answer = shift @{$$dnsAnswer{Answer}};
+		$hostname = $$answer{data};
+	} else {
+		my $status = $dnsResponse->code;
+		print STDERR "$0: ERROR: Google Public DNS lookup failed($status): $queryName";
+	}
+} else {
+	my $resolver = Net::DNS::Resolver->new(
+		nameservers => [ '127.0.0.1' ],
+		defnames => 0,
+		recurse => 1,
+		persistent_udp => 1,
+		retry => 1,
+		udp_timeout => 5,
+		dnssec => 0,
+	);
+	my $reply = $resolver->search($ipAddress, 'PTR');
+	if ($reply) {
+		foreach ($reply->answer) {
+			$_->type eq 'PTR' and $hostname = $_->rdatastr and last;
+		}
+	} else {
+		print STDERR "$0: ERROR: DNS lookup failed: $ipAddress, PTR";
+	}
 }
-my $dnsAnswer = decode_json($dnsResponse->content);
-my $answer = shift @{$$dnsAnswer{Answer}};
-$hostname = $$answer{data};
 $hostname =~ s/\.$//;
 print "$ipAddress\t$hostname";
 
